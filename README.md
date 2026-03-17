@@ -143,12 +143,6 @@ This documentation is compiled from various sources and maintained for education
 - [Momentum Firmware](https://github.com/Next-Flip/Momentum-Firmware)
 - [Unleashed Firmware](https://github.com/DarkFlippers/unleashed-firmware)
 
-## 📞 Support
-
-For questions, issues, or discussions:
-- 🐛 **Report issues** via GitHub Issues
-- 💬 **Discussions** for general questions
-- 📧 **Direct contact**: Check profile information
 
 ---
 
