@@ -19,17 +19,11 @@ This repository contains a complete, well-structured compilation of Flipper Zero
 
 ```
 Flipper-Zero-Complete-Documentation/
-├── Flipper_Documentation_Complete.md    # Main comprehensive documentation
-├── AppManifests.md                      # App development manifests
-├── AppsOnSDCard.md                      # External app development
-├── AssetPacks.md                        # Custom animations and icons
-├── BadUsbScriptFormat.md                # BadUSB scripting guide
-├── fbt.md                               # Flipper Build Tool documentation
-├── SubGhzFileFormats.md                 # Sub-GHz file formats
-├── NfcFileFormats.md                    # NFC file formats
-├── InfraredFileFormats.md               # Infrared file formats
-├── [30+ more specialized files...]       # Individual topic documentation
+├── Flipper_Documentation_Complete.md    # 📖 Main comprehensive documentation
+└── README.md                            # 📋 Repository overview and guide
 ```
+
+**Note**: This repository contains a single comprehensive documentation file that consolidates all individual Flipper Zero documentation topics into one well-structured guide. All content from the original 37 separate documentation files has been merged into the main `Flipper_Documentation_Complete.md` file.
 
 ## 📚 Main Documentation Sections
 
@@ -85,22 +79,33 @@ Flipper-Zero-Complete-Documentation/
 2. **Read the main documentation:**
    - Open `Flipper_Documentation_Complete.md`
    - Use the table of contents to navigate to specific sections
+   - All content is consolidated in this single comprehensive file
 
-3. **Explore specialized topics:**
-   - Individual `.md` files for detailed coverage
+3. **Navigate using the structure:**
+   - 10 major sections covering all aspects
    - Cross-references between related topics
+   - Detailed examples and configurations
 
-## 📖 Key Documentation Files
+## 📖 Documentation Access
+
+### 🎯 Main Documentation File
 
 | File | Purpose |
 |------|---------|
-| `Flipper_Documentation_Complete.md` | 📖 **Main comprehensive guide** |
-| `fbt.md` | 🔧 **Build system and development** |
-| `SubGhzFileFormats.md` | 📡 **Sub-GHz protocols and files** |
-| `AppManifests.md` | 📱 **Application development** |
-| `BadUsbScriptFormat.md` | ⌨️ **BadUSB scripting** |
-| `NfcFileFormats.md` | 🎯 **NFC card formats** |
-| `InfraredFileFormats.md` | 📺 **IR remote protocols** |
+| `Flipper_Documentation_Complete.md` | 📖 **Complete comprehensive guide** - All Flipper Zero documentation in one file |
+
+### 📚 Key Sections (within main file)
+
+| Section | Content |
+|---------|---------|
+| Development & Build System | � FBT, hardware targets, unit tests |
+| Applications & Plugins | 📱 App development, FAP packages |
+| Hardware & Protocols | ⚙️ Expansion modules, bus API |
+| Radio & Sub-GHz | 📡 Protocols, file formats, programming |
+| Infrared | 📺 IR protocols, universal remotes |
+| NFC & RFID | 🎯 Card formats, reading techniques |
+| Tools & Utilities | 🛠️ BadUSB, converters, drivers |
+| System & Debugging | � Key combos, OTA, customization |
 
 ## 🎯 Use Cases
 
