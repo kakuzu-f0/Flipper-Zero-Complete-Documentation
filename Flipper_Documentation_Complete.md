@@ -5,14 +5,15 @@
 
 1. [Development & Build System](#development--build-system)
 2. [Applications & Plugins](#applications--plugins)
-3. [Hardware & Protocols](#hardware--protocols)
-4. [File Formats](#file-formats)
-5. [Radio & Sub-GHz](#radio--sub-ghz)
-6. [Infrared](#infrared)
-7. [NFC & RFID](#nfc--rfid)
-8. [System & Debugging](#system--debugging)
-9. [Tools & Utilities](#tools--utilities)
-10. [Configuration & Settings](#configuration--settings)
+3. [Practical Development Tutorials](#practical-development-tutorials)
+4. [Hardware & Protocols](#hardware--protocols)
+5. [File Formats](#file-formats)
+6. [Radio & Sub-GHz](#radio--sub-ghz)
+7. [Infrared](#infrared)
+8. [NFC & RFID](#nfc--rfid)
+9. [System & Debugging](#system--debugging)
+10. [Tools & Utilities](#tools--utilities)
+11. [Configuration & Settings](#configuration--settings)
 
 ---
 
@@ -142,6 +143,998 @@ Asset Packs are made of 2 parts: Anims and Icons.
 #### Building Asset Packs
 
 Use the `scripts/asset_packer.py` script to compile asset packs from PNG images.
+
+### Practical Development Tutorials
+
+This section provides hands-on coding examples for Flipper Zero application development, from basic GUI structure to advanced features.
+
+#### My First App - Basic GUI Structure and Rendering
+
+A minimal application demonstrating the basic structure and GUI rendering:
+
+```c
+#include <furi.h>
+#include <gui/gui.h>
+#include <input/input.h>
+#include <stdlib.h>
+
+// Event types for our application
+typedef enum {
+    EventTypeTick,
+    EventTypeKey,
+} EventType;
+
+// Plugin event structure
+typedef struct {
+    EventType type;
+    InputEvent input;
+} PluginEvent;
+
+// Application state structure
+typedef struct {
+    int x;
+    int y;
+} PluginState;
+
+// Render callback - draws the GUI
+static void render_callback(Canvas* const canvas, void* ctx) {
+    const PluginState* plugin_state = acquire_mutex((ValueMutex*)ctx, 25);
+    if(plugin_state == NULL) {
+        return;
+    }
+    
+    // Clear canvas
+    canvas_clear(canvas);
+    
+    // Draw border around screen
+    canvas_draw_frame(canvas, 0, 0, 128, 64);
+
+    // Set font and draw text
+    canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str_aligned(
+        canvas, 
+        plugin_state->x, 
+        plugin_state->y, 
+        AlignRight, 
+        AlignBottom, 
+        "Hello World!"
+    );
+
+    release_mutex((ValueMutex*)ctx, plugin_state);
+}
+
+// Input callback - handles button presses
+static void input_callback(InputEvent* input_event, FuriMessageQueue* event_queue) {
+    furi_assert(event_queue);
+
+    PluginEvent event = {.type = EventTypeKey, .input = *input_event};
+    furi_message_queue_put(event_queue, &event, FuriWaitForever);
+}
+
+// Initialize application state
+static void hello_world_state_init(PluginState* const plugin_state) {
+    plugin_state->x = 50;
+    plugin_state->y = 30;
+}
+
+// Main application entry point
+int32_t hello_world_app() {
+    // Create message queue for events
+    FuriMessageQueue* event_queue = furi_message_queue_alloc(8, sizeof(PluginEvent));
+
+    // Allocate and initialize plugin state
+    PluginState* plugin_state = malloc(sizeof(PluginState));
+    hello_world_state_init(plugin_state);
+
+    // Create mutex for thread-safe state access
+    ValueMutex state_mutex;
+    if(!init_mutex(&state_mutex, plugin_state, sizeof(PluginState))) {
+        FURI_LOG_E("Hello_world", "cannot create mutex\r\n");
+        free(plugin_state);
+        return 255;
+    }
+
+    // Set up viewport and callbacks
+    ViewPort* view_port = view_port_alloc();
+    view_port_draw_callback_set(view_port, render_callback, &state_mutex);
+    view_port_input_callback_set(view_port, input_callback, event_queue);
+
+    // Open GUI and register viewport
+    Gui* gui = furi_record_open("gui");
+    gui_add_view_port(gui, view_port, GuiLayerFullscreen);
+
+    // Main application loop
+    PluginEvent event;
+    for(bool processing = true; processing;) {
+        FuriStatus event_status = furi_message_queue_get(event_queue, &event, 100);
+
+        // Acquire mutex for state modification
+        PluginState* plugin_state = (PluginState*)acquire_mutex_block(&state_mutex);
+
+        if(event_status == FuriStatusOk) {
+            // Handle input events
+            if(event.type == EventTypeKey) {
+                if(event.input.type == InputTypePress) {
+                    switch(event.input.key) {
+                    case InputKeyUp:
+                        plugin_state->y--;
+                        break;
+                    case InputKeyDown:
+                        plugin_state->y++;
+                        break;
+                    case InputKeyRight:
+                        plugin_state->x++;
+                        break;
+                    case InputKeyLeft:
+                        plugin_state->x--;
+                        break;
+                    case InputKeyOk:
+                    case InputKeyBack:
+                        processing = false;
+                        break;
+                    default:
+                        break;
+                    }
+                }
+            }
+        } else {
+            FURI_LOG_D("Hello_world", "FuriMessageQueue: event timeout");
+        }
+
+        // Update display
+        view_port_update(view_port);
+        release_mutex(&state_mutex, plugin_state);
+    }
+
+    // Cleanup resources
+    view_port_enabled_set(view_port, false);
+    gui_remove_view_port(gui, view_port);
+    furi_record_close("gui");
+    view_port_free(view_port);
+    furi_message_queue_free(event_queue);
+    delete_mutex(&state_mutex);
+    free(plugin_state);
+
+    return 0;
+}
+```
+
+**Key Concepts:**
+- Basic application structure with event handling
+- GUI rendering with canvas operations
+- Thread-safe state management with mutex
+- Input handling and event queues
+- Proper resource cleanup
+
+#### Keypad Input - Complete Button Handling with Timers
+
+Demonstrates comprehensive button input handling and timer usage:
+
+```c
+#include <stdio.h>
+#include <furi.h>
+#include <gui/gui.h>
+#include <input/input.h>
+#include <notification/notification_messages.h>
+
+// Current pressed key label
+char* currentKeyPressed;
+int BUFFER = 10;
+
+static void draw_callback(Canvas* canvas, void* ctx) {
+    UNUSED(ctx);
+
+    canvas_clear(canvas);
+    canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str(canvas, 34, 12, "Keypad Input");
+
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 9, 40, "Key pressed - ");
+
+    canvas_draw_line(canvas, 0, 16, 127, 16);
+
+    // Display current pressed key
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 71, 40, currentKeyPressed);
+}
+
+// Timer callback - fires every 2 seconds
+static void timer_callback(FuriMessageQueue* event_queue) {
+    furi_assert(event_queue);
+    currentKeyPressed = "TIMER 2sec.";
+}
+
+static void input_callback(InputEvent* input_event, void* ctx) {
+    furi_assert(ctx);
+    FuriMessageQueue* event_queue = ctx;
+    furi_message_queue_put(event_queue, input_event, FuriWaitForever);
+}
+
+int32_t main_fap(void* p) {
+    UNUSED(p);
+    // Initialize current key
+    currentKeyPressed = "NONE";
+
+    InputEvent event;
+    FuriMessageQueue* event_queue = furi_message_queue_alloc(8, sizeof(InputEvent));
+
+    ViewPort* view_port = view_port_alloc();
+    view_port_draw_callback_set(view_port, draw_callback, NULL);
+    view_port_input_callback_set(view_port, input_callback, event_queue);
+
+    Gui* gui = furi_record_open(RECORD_GUI);
+    gui_add_view_port(gui, view_port, GuiLayerFullscreen);
+
+    // Create and start timer (2 second interval)
+    FuriTimer* timer = furi_timer_alloc(timer_callback, FuriTimerTypePeriodic, event_queue);
+    furi_timer_start(timer, 2000);
+
+    while(1) {
+        furi_check(furi_message_queue_get(event_queue, &event, FuriWaitForever) == FuriStatusOk);
+        
+        if(event.key == InputKeyLeft) {
+            currentKeyPressed = "LEFT";
+        } else if(event.key == InputKeyDown) {
+            currentKeyPressed = "DOWN";
+        } else if(event.key == InputKeyRight) {
+            currentKeyPressed = "RIGHT";
+        } else if(event.key == InputKeyUp) {
+            currentKeyPressed = "UP";
+        } else if(event.key == InputKeyOk) {
+            currentKeyPressed = "OK";
+        } else if(event.key == InputKeyBack) {
+            break; // Exit application
+        }
+    }
+
+    // Cleanup timer
+    furi_timer_stop(timer);
+    furi_timer_free(timer);
+
+    // Free resources
+    furi_message_queue_free(event_queue);
+    gui_remove_view_port(gui, view_port);
+    view_port_free(view_port);
+    furi_record_close(RECORD_GUI);
+    return 0;
+}
+```
+
+**Key Concepts:**
+- Complete button input handling for all keys
+- Timer implementation with periodic callbacks
+- Dynamic UI updates based on user input
+- Timer resource management and cleanup
+
+#### Basic Notifications - Vibration and LED Control
+
+Shows how to use vibration and LED notifications:
+
+```c
+#include <stdio.h>
+#include <furi.h>
+#include <furi_hal.h>
+#include <gui/gui.h>
+#include <input/input.h>
+#include <notification/notification_messages.h>
+
+// Notification status message
+char* notificationString;
+int BUFFER = 10;
+int counter = 0;
+
+static void draw_callback(Canvas* canvas, void* ctx) {
+    UNUSED(ctx);
+
+    canvas_clear(canvas);
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 14, 12, "Basic Notifications");
+
+    canvas_draw_line(canvas, 2, 18, 125, 18);
+
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 4, 35, "Type -");
+
+    // Update notification status
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 35, 35, notificationString);
+}
+
+static void input_callback(InputEvent* input_event, void* ctx) {
+    furi_assert(ctx);
+    FuriMessageQueue* event_queue = ctx;
+    furi_message_queue_put(event_queue, input_event, FuriWaitForever);
+}
+
+// Timer callback - triggers notifications every 1 second
+static void timer_callback(FuriMessageQueue* event_queue) {
+    furi_assert(event_queue);
+    NotificationApp* notifications = furi_record_open(RECORD_NOTIFICATION);
+    
+    counter++;
+    
+    // Trigger notification every 5 seconds
+    if(counter % 5 == 0) {
+        // Turn on blue LED with blink
+        notification_message(notifications, &sequence_blink_blue_100);
+        // Start vibration
+        furi_hal_vibro_on(true);
+        notificationString = "LED & VIBRO";
+    } else {
+        notificationString = "TIMER";
+        // Turn off vibration
+        furi_hal_vibro_on(false);
+    }
+}
+
+int32_t main_fap(void* p) {
+    UNUSED(p);
+    notificationString = (char*)malloc(sizeof(char) * BUFFER);
+    notificationString = "Notifications";
+
+    InputEvent event;
+    FuriMessageQueue* event_queue = furi_message_queue_alloc(8, sizeof(InputEvent));
+
+    ViewPort* view_port = view_port_alloc();
+    view_port_draw_callback_set(view_port, draw_callback, NULL);
+    view_port_input_callback_set(view_port, input_callback, event_queue);
+
+    Gui* gui = furi_record_open(RECORD_GUI);
+    gui_add_view_port(gui, view_port, GuiLayerFullscreen);
+
+    // Create and start timer (1 second interval)
+    FuriTimer* timer = furi_timer_alloc(timer_callback, FuriTimerTypePeriodic, event_queue);
+    furi_timer_start(timer, 1000);
+
+    while(1) {
+        furi_check(furi_message_queue_get(event_queue, &event, FuriWaitForever) == FuriStatusOk);
+
+        if(event.key == InputKeyBack) {
+            break;
+        }
+    }
+
+    // Cleanup
+    furi_timer_free(timer);
+    furi_message_queue_free(event_queue);
+    gui_remove_view_port(gui, view_port);
+    view_port_free(view_port);
+    furi_record_close(RECORD_GUI);
+
+    return 0;
+}
+```
+
+**Key Concepts:**
+- Basic notification system usage
+- LED control with different colors
+- Vibration control
+- Timer-based notification triggers
+- Notification record management
+
+#### Advanced Notifications - Custom Sequences, Sound, Multi-Color LEDs
+
+Comprehensive notification examples including custom sequences and sound:
+
+```c
+#include <stdio.h>
+#include <furi.h>
+#include <furi_hal.h>
+#include <gui/gui.h>
+#include <input/input.h>
+#include <notification/notification_messages.h>
+#include <notification/notification.h>
+
+// Notification status
+char* notificationString;
+int BUFFER = 20;
+
+// Custom notification sequence
+const NotificationSequence my_sequence = {
+    &message_display_backlight_off,
+    &message_note_e4,
+    &message_delay_1000,
+    &message_note_c4,
+    &message_delay_1000,
+    NULL,
+};
+
+static void draw_callback(Canvas* canvas, void* ctx) {
+    UNUSED(ctx);
+
+    canvas_clear(canvas);
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 29, 15, "Advanced Notifications");
+
+    canvas_draw_frame(canvas, 4, 23, 121, 34);
+
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 12, 44, notificationString);
+}
+
+static void input_callback(InputEvent* input_event, void* ctx) {
+    furi_assert(ctx);
+    FuriMessageQueue* event_queue = ctx;
+    furi_message_queue_put(event_queue, input_event, FuriWaitForever);
+}
+
+// Vibration example
+static void vibration_example() {
+    notificationString = "3 secs vibration";
+    furi_hal_vibro_on(false);
+    furi_hal_vibro_on(true);
+    furi_delay_ms(3000);
+    furi_hal_vibro_on(false);
+    notificationString = "";
+}
+
+// Display backlight control
+static void display_on() {
+    notificationString = "Display ON";
+    NotificationApp* notifications = furi_record_open(RECORD_NOTIFICATION);
+    notification_message(notifications, &sequence_display_backlight_on);
+    return;
+}
+
+// Multi-color LED blinking
+static void blinking_integrated_LED() {
+    notificationString = "Blinking LED";
+    NotificationApp* notifications = furi_record_open(RECORD_NOTIFICATION);
+    
+    notification_message(notifications, &sequence_blink_red_100);
+    furi_delay_ms(1000);
+    notification_message(notifications, &sequence_blink_green_100);
+    furi_delay_ms(1000);
+    notification_message(notifications, &sequence_blink_blue_100);
+    furi_delay_ms(1000);
+    notification_message(notifications, &sequence_blink_yellow_100);
+    furi_delay_ms(1000);
+    notification_message(notifications, &sequence_blink_cyan_100);
+    furi_delay_ms(1000);
+    notification_message(notifications, &sequence_blink_magenta_100);
+    furi_delay_ms(1000);
+    notification_message(notifications, &sequence_blink_white_100);
+    return;
+}
+
+// Sound generation
+static void generate_sounds() {
+    notificationString = "Generate sound";
+    NotificationApp* notifications = furi_record_open(RECORD_NOTIFICATION);
+    
+    notification_message(notifications, &sequence_success);
+    furi_delay_ms(1000);
+    notification_message(notifications, &sequence_error);
+    furi_delay_ms(1000);
+    
+    // Use custom sequence
+    notification_message(notifications, &my_sequence);
+}
+
+int32_t main_fap(void* p) {
+    UNUSED(p);
+    notificationString = (char*)malloc(sizeof(char) * BUFFER);
+    notificationString = "Notifications";
+
+    InputEvent event;
+    FuriMessageQueue* event_queue = furi_message_queue_alloc(8, sizeof(InputEvent));
+
+    ViewPort* view_port = view_port_alloc();
+    view_port_draw_callback_set(view_port, draw_callback, NULL);
+    view_port_input_callback_set(view_port, input_callback, event_queue);
+
+    Gui* gui = furi_record_open(RECORD_GUI);
+    gui_add_view_port(gui, view_port, GuiLayerFullscreen);
+
+    bool first_time = true;
+
+    while(1) {
+        if(first_time == true) {
+            notificationString = "Notifications";
+            furi_delay_ms(1000);
+            display_on();
+            vibration_example();
+            blinking_integrated_LED();
+            generate_sounds();
+        } else {
+            first_time = false;
+            notificationString = "Press back to exit";
+        }
+        
+        furi_check(furi_message_queue_get(event_queue, &event, FuriWaitForever) == FuriStatusOk);
+        
+        if(event.key == InputKeyBack) {
+            break;
+        }
+    }
+
+    // Cleanup
+    furi_message_queue_free(event_queue);
+    gui_remove_view_port(gui, view_port);
+    view_port_free(view_port);
+    furi_record_close(RECORD_GUI);
+
+    return 0;
+}
+```
+
+**Key Concepts:**
+- Custom notification sequences creation
+- Multi-color LED control (red, green, blue, yellow, cyan, magenta, white)
+- Sound generation and audio notes
+- Display backlight control
+- Complex notification workflows
+
+#### File I/O Operations - Create, Read, Rename, Delete Files
+
+Demonstrates file system operations:
+
+```c
+#include <stdio.h>
+#include <furi.h>
+#include <furi_hal.h>
+#include <gui/gui.h>
+#include <input/input.h>
+#include <notification/notification_messages.h>
+#include <storage/filesystem_api_defines.h>
+#include <storage/storage.h>
+
+// Status messages
+char* main_label;
+char* line_upper;
+char* line_center;
+char* line_bottom;
+int BUFFER = 30;
+
+static void draw_callback(Canvas* canvas, void* ctx) {
+    UNUSED(ctx);
+    canvas_clear(canvas);
+
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 24, 9, "File I/O Operations");
+
+    canvas_draw_line(canvas, 0, 12, 126, 12);
+
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 1, 23, main_label);
+
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 1, 32, line_upper);
+
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 1, 42, line_center);
+
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 1, 52, line_bottom);
+}
+
+static void input_callback(InputEvent* input_event, void* ctx) {
+    furi_assert(ctx);
+    FuriMessageQueue* event_queue = ctx;
+    furi_message_queue_put(event_queue, input_event, FuriWaitForever);
+}
+
+// Create a test file
+static void create_file() {
+    NotificationApp* notifications = furi_record_open(RECORD_NOTIFICATION);
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    File* file = storage_file_alloc(storage);
+
+    // Open file for writing, create if doesn't exist
+    bool result = storage_file_open(file, EXT_PATH("apps/Examples/test.log"), FSAM_WRITE, FSOM_OPEN_ALWAYS);
+    
+    if(result) {
+        char* content = "This is an Awesome test !!\n";
+        storage_file_write(file, content, strlen(content));
+        storage_file_close(file);
+        storage_file_free(file);
+        
+        notification_message(notifications, &sequence_success);
+        main_label = "File created successfully.";
+        line_upper = "press LEFT for read the file";
+        line_center = "press RIGHT for rename the file";
+        line_bottom = "press DOWN for delete the file";
+    } else {
+        main_label = "Error: file not created.";
+        notification_message(notifications, &sequence_error);
+    }
+    
+    furi_record_close(RECORD_NOTIFICATION);
+}
+
+// Read the test file
+static void read_file() {
+    NotificationApp* notifications = furi_record_open(RECORD_NOTIFICATION);
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    File* file = storage_file_alloc(storage);
+
+    bool result = storage_file_open(file, EXT_PATH("apps/Examples/test.log"), FSAM_READ, FSOM_OPEN_EXISTING);
+
+    if(result) {
+        int buffer_size = 128;
+        char* buffer = (char*)malloc(sizeof(char) * buffer_size);
+        
+        storage_file_read(file, buffer, buffer_size);
+        line_upper = "file content:";
+        line_center = "";
+        line_bottom = buffer;
+
+        storage_file_close(file);
+        storage_file_free(file);
+        notification_message(notifications, &sequence_success);
+    } else {
+        main_label = "Can't read the file content.";
+        notification_message(notifications, &sequence_error);
+    }
+    
+    furi_record_close(RECORD_NOTIFICATION);
+}
+
+// Rename the file
+static void rename_file() {
+    NotificationApp* notifications = furi_record_open(RECORD_NOTIFICATION);
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+
+    FS_Error result = storage_common_rename(
+        storage, EXT_PATH("apps/Examples/test.log"), EXT_PATH("apps/Examples/test2.log"));
+    
+    if(result == FSE_OK) {
+        notification_message(notifications, &sequence_success);
+        main_label = "Rename op. successfully";
+    } else {
+        main_label = "Can't rename the file.";
+        notification_message(notifications, &sequence_error);
+    }
+    
+    furi_record_close(RECORD_NOTIFICATION);
+}
+
+// Delete the file
+static void delete_file() {
+    NotificationApp* notifications = furi_record_open(RECORD_NOTIFICATION);
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+
+    FS_Error result = storage_common_remove(storage, EXT_PATH("apps/Examples/test.log"));
+    if(result == FSE_OK) {
+        notification_message(notifications, &sequence_success);
+        main_label = "Delete op. successfully";
+    } else {
+        // Try to delete the renamed file
+        result = storage_common_remove(storage, EXT_PATH("apps/Examples/test2.log"));
+        if(result == FSE_OK) {
+            notification_message(notifications, &sequence_success);
+            main_label = "Delete op. successfully";
+        } else {
+            main_label = "Can't delete the file.";
+            notification_message(notifications, &sequence_error);
+        }
+    }
+    
+    furi_record_close(RECORD_NOTIFICATION);
+}
+
+int32_t main_fap(void* p) {
+    UNUSED(p);
+    main_label = (char*)malloc(sizeof(char) * BUFFER);
+    main_label = "Press OK for create a file";
+
+    InputEvent event;
+    FuriMessageQueue* event_queue = furi_message_queue_alloc(8, sizeof(InputEvent));
+
+    ViewPort* view_port = view_port_alloc();
+    view_port_draw_callback_set(view_port, draw_callback, NULL);
+    view_port_input_callback_set(view_port, input_callback, event_queue);
+
+    Gui* gui = furi_record_open(RECORD_GUI);
+    gui_add_view_port(gui, view_port, GuiLayerFullscreen);
+
+    bool file_created = false;
+    int choose_value = 0;
+    
+    while(1) {
+        furi_check(furi_message_queue_get(event_queue, &event, FuriWaitForever) == FuriStatusOk);
+        
+        if(event.key == InputKeyOk && file_created == false) {
+            create_file();
+            file_created = true;
+        } else if(event.key == InputKeyLeft && file_created == true) {
+            line_upper = "press OK for READ the file";
+            line_center = "";
+            line_bottom = "";
+            choose_value = 1;
+        } else if(event.key == InputKeyRight && file_created == true) {
+            line_upper = "press OK for RENAME the file";
+            line_center = "";
+            line_bottom = "";
+            choose_value = 2;
+        } else if(event.key == InputKeyDown && file_created == true) {
+            line_upper = "press OK for DELETE the file";
+            line_center = "";
+            line_bottom = "";
+            choose_value = 3;
+        } else if(event.key == InputKeyOk && choose_value > 0) {
+            if(choose_value == 1) {
+                choose_value = 0;
+                line_upper = "";
+                line_center = "READING file";
+                line_bottom = "";
+                read_file();
+            } else if(choose_value == 2) {
+                choose_value = 0;
+                line_upper = "";
+                line_center = "RENAMING file";
+                line_bottom = "";
+                rename_file();
+            } else if(choose_value == 3) {
+                choose_value = 0;
+                line_upper = "";
+                line_center = "DELETING file";
+                line_bottom = "";
+                delete_file();
+            }
+        } else if(event.key == InputKeyBack) {
+            break;
+        }
+    }
+
+    // Cleanup
+    furi_message_queue_free(event_queue);
+    gui_remove_view_port(gui, view_port);
+    view_port_free(view_port);
+    furi_record_close(RECORD_GUI);
+
+    return 0;
+}
+```
+
+**Key Concepts:**
+- File creation and writing operations
+- File reading with buffer management
+- File system operations (rename, delete)
+- Storage API usage and error handling
+- External path (SD card) file operations
+
+#### Complete GUI Development
+
+Essential GUI components and patterns:
+
+##### Essential Headers
+```c
+#include <furi.h>           # Core functionality
+#include <gui/gui.h>        # GUI utilities
+#include <input/input.h>    # Input handling
+```
+
+##### ViewPort Management
+```c
+// Allocate viewport
+ViewPort* view_port = view_port_alloc();
+
+// Set draw callback
+view_port_draw_callback_set(view_port, draw_callback, context);
+
+// Set input callback
+view_port_input_callback_set(view_port, input_callback, context);
+
+// Register with GUI
+Gui* gui = furi_record_open("gui");
+gui_add_view_port(gui, view_port, GuiLayerFullscreen);
+```
+
+##### Drawing Operations
+```c
+static void draw_callback(Canvas* canvas, void* ctx) {
+    // Clear canvas
+    canvas_clear(canvas);
+    
+    // Set colors
+    canvas_set_color(canvas, ColorBlack);
+    
+    // Set fonts
+    canvas_set_font(canvas, FontPrimary);    // Primary font
+    canvas_set_font(canvas, FontSecondary);  // Secondary font
+    canvas_set_font(canvas, FontKeyboard);   // Keyboard font
+    canvas_set_font(canvas, FontBigNumbers); // Large numbers
+    
+    // Draw text
+    canvas_draw_str(canvas, x, y, "Text");
+    canvas_draw_str_aligned(canvas, x, y, AlignLeft, AlignTop, "Text");
+    
+    // Draw shapes
+    canvas_draw_frame(canvas, x, y, width, height);  // Rectangle
+    canvas_draw_box(canvas, x, y, width, height);     // Filled rectangle
+    canvas_draw_line(canvas, x1, y1, x2, y2);          // Line
+    canvas_draw_circle(canvas, x, y, radius);          // Circle
+    
+    // Draw icons
+    canvas_draw_icon(canvas, x, y, &I_icon_name);
+}
+```
+
+##### Text Alignment
+```c
+// Horizontal: AlignLeft, AlignCenter, AlignRight
+// Vertical: AlignTop, AlignCenter, AlignBottom
+
+canvas_draw_str_aligned(
+    canvas,
+    x_coord,
+    y_coord,
+    AlignCenter,    // Horizontal
+    AlignCenter,    // Vertical
+    "Centered Text"
+);
+```
+
+##### Input Event Structure
+```c
+typedef struct {
+    InputKey key;       // Which button
+    InputType type;     // Press, release, repeat, short, long
+    uint32_t sequence;  // Event sequence number
+} InputEvent;
+```
+
+##### Input Keys and Types
+```c
+// Keys: InputKeyUp, InputKeyDown, InputKeyLeft, InputKeyRight, InputKeyOk, InputKeyBack
+// Types: InputTypePress, InputTypeRelease, InputTypeRepeat, InputTypeShort, InputTypeLong
+```
+
+#### Threading Example - Multi-Threading with FuriThread
+
+Advanced example demonstrating multi-threading:
+
+```c
+#include <stdio.h>
+#include <furi.h>
+#include <gui/gui.h>
+#include <string.h>
+#include <furi_hal.h>
+#include <stdlib.h>
+
+// Thread structure
+typedef struct {
+    int time_table_number;
+    FuriThread* thread;
+} TimeTableThread;
+
+int time_table_2;
+int time_table_5;
+TimeTableThread* timeTableThread2;
+TimeTableThread* timeTableThread5;
+bool stop; // Thread termination flag
+
+static void draw_callback(Canvas* canvas, void* context) {
+    // Convert integers to strings for display
+    char label_time_table_2[10];
+    char label_time_table_5[10];
+    itoa(time_table_2, label_time_table_2, 10);
+    itoa(time_table_5, label_time_table_5, 10);
+
+    // GUI design
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 2, 9, "Multi-threading Example");
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 52, 30, "Thread 2: ");
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 52, 50, "Thread 5: ");
+
+    // Display counter values
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 95, 30, label_time_table_2);
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 95, 50, label_time_table_5);
+    
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 2, 19, "press OK to start...");
+}
+
+static void input_callback(InputEvent* input_event, void* ctx) {
+    furi_assert(ctx);
+    FuriMessageQueue* event_queue = ctx;
+    furi_message_queue_put(event_queue, input_event, FuriWaitForever);
+}
+
+// Thread body function
+static int32_t thread_body(void* context) {
+    TimeTableThread* time_table_thread = (TimeTableThread*)context;
+    
+    while(!stop) {
+        if(time_table_thread->time_table_number == 2) {
+            time_table_2 += time_table_thread->time_table_number;
+            furi_delay_ms(200);
+        } else if(time_table_thread->time_table_number == 5) {
+            time_table_5 += time_table_thread->time_table_number;
+            furi_delay_ms(750);
+        }
+    }
+    return 0;
+}
+
+// Configure and start thread
+static void configure_and_start_thread(TimeTableThread* timeTableThread) {
+    char string_time_table[10];
+    char thread_name[25] = "ThreadTimeTable_";
+    
+    itoa(timeTableThread->time_table_number, string_time_table, 10);
+    strcat(thread_name, string_time_table);
+    
+    timeTableThread->thread = furi_thread_alloc();
+    furi_thread_set_name(timeTableThread->thread, thread_name);
+    furi_thread_set_stack_size(timeTableThread->thread, 1024);
+    furi_thread_set_callback(timeTableThread->thread, thread_body, timeTableThread);
+    furi_thread_start(timeTableThread->thread);
+}
+
+int32_t main_fap(void* p) {
+    UNUSED(p);
+
+    InputEvent event;
+    FuriMessageQueue* event_queue = furi_message_queue_alloc(8, sizeof(InputEvent));
+
+    ViewPort* view_port = view_port_alloc();
+    view_port_draw_callback_set(view_port, draw_callback, NULL);
+    view_port_input_callback_set(view_port, input_callback, event_queue);
+
+    Gui* gui = furi_record_open(RECORD_GUI);
+    gui_add_view_port(gui, view_port, GuiLayerFullscreen);
+
+    bool threads_running = false;
+
+    while(1) {
+        furi_check(furi_message_queue_get(event_queue, &event, FuriWaitForever) == FuriStatusOk);
+        
+        if(event.key == InputKeyOk && !threads_running) {
+            // Initialize thread structures
+            timeTableThread2 = malloc(sizeof(TimeTableThread));
+            timeTableThread2->time_table_number = 2;
+            
+            timeTableThread5 = malloc(sizeof(TimeTableThread));
+            timeTableThread5->time_table_number = 5;
+            
+            // Start threads
+            configure_and_start_thread(timeTableThread2);
+            configure_and_start_thread(timeTableThread5);
+            
+            stop = false;
+            threads_running = true;
+        } else if(event.key == InputKeyBack && threads_running) {
+            // Stop threads
+            stop = true;
+            
+            // Wait for threads to finish
+            furi_thread_join(timeTableThread2->thread);
+            furi_thread_join(timeTableThread5->thread);
+            
+            // Free thread resources
+            furi_thread_free(timeTableThread2->thread);
+            furi_thread_free(timeTableThread5->thread);
+            
+            free(timeTableThread2);
+            free(timeTableThread5);
+            
+            threads_running = false;
+            break;
+        }
+    }
+
+    // Cleanup
+    furi_message_queue_free(event_queue);
+    gui_remove_view_port(gui, view_port);
+    view_port_free(view_port);
+    furi_record_close(RECORD_GUI);
+
+    return 0;
+}
+```
+
+**Key Concepts:**
+- Multi-threading with FuriThread
+- Thread synchronization and termination
+- Thread-safe data sharing
+- Thread lifecycle management
+- Resource cleanup in multi-threaded applications
 
 ---
 
